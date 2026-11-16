@@ -2,18 +2,19 @@
 
 Your Govee lamp, and a little orange guy in the menu bar, tell you when Claude needs you.
 
-| Claude… | Lamp | Menu bar |
-|---|---|---|
-| finished a reply | green fills the 3 lights top → middle → bottom, then back to your color | orange guy wiggles + chat title |
-| needs permission, ignored 90s | one quick red flash, then back | guy turns red |
-| you reply / approve / click the guy | (already back to normal) | disappears |
-| (lamp is off) | nothing | still shows |
+**Menu bar:** the Claude logo plus one traffic light per Claude agent you have going:
+
+- 🟡 **yellow**: working
+- 🟢 **green**: done, waiting for you
+- 🔴 **red**: stopped, needs something from you (a permission prompt)
+
+Click it for the list of agents. Pick one to jump straight to that chat. The logo does a quick spin when one finishes or needs you.
+
+**Lamp:** when an agent finishes, green fills the 3 lights top → middle → bottom, then it goes back to your color. A permission prompt left unanswered for 90s gets one quick red flash. If the lamp is off, it does nothing (the menu bar still works).
 
 The lamp never holds a color. It always goes back to whatever color and brightness you had.
 If you use a Govee *scene* or different colors per light, the API can't read that,
 so after a flash you get one flat color. Pick a solid color in the app if that bugs you.
-
-Click the guy and it opens that exact chat (Claude desktop app) or the terminal it's in. Right-click shows every waiting chat.
 
 Works with Claude Code (CLI and the Code tab in the desktop app) through hooks. Plain claude.ai web chats have no hooks, so they don't trigger it.
 
@@ -45,4 +46,4 @@ Settings live in `~/.config/govee-claude/config.json` (`green`, `sweep_order`, `
 
 ## Battery
 
-The menu bar app doesn't poll. macOS wakes it only when the state file changes. It animates for 20s when something new comes in (red keeps going), then uses 0% CPU. Hooks are async, so they never slow Claude down. The lamp is only called when something changes, a few requests per reply, well under Govee's daily limit.
+The menu bar app doesn't poll. macOS wakes it only when the state file changes. The logo spins for about 2 seconds when an agent finishes or needs you; otherwise it uses 0% CPU. Hooks are async, so they never slow Claude down. The lamp is only called when something changes, a few requests per reply, well under Govee's daily limit.
