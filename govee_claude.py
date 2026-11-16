@@ -3,7 +3,8 @@
 
   Claude finished          -> green fills the lamp top -> middle -> bottom, then back to your color
   Permission prompt you've ignored for 90s -> one quick red flash, then back
-  Menu bar guy             -> shows which chat needs you; click to jump there
+  Menu bar                 -> Claude logo + a traffic light per agent (yellow working,
+                              green done, red needs you); click to jump to that chat
   Lamp is off              -> lamp does nothing (menu bar still works)
 
 No dependencies. Python 3 stdlib only.
@@ -171,7 +172,7 @@ def set_brightness(c, v):
 # to whatever you had. The menu bar is what keeps track of who's waiting.
 
 def new_state():
-    return {"pending": {}, "vibe": None}
+    return {"agents": {}, "vibe": None}
 
 
 def restore(c, s):
@@ -278,47 +279,62 @@ def spawn(*args):
                      env=os.environ.copy())
 
 
-def attention(sid, urgent, info=None):
-    """A chat needs you: menu bar shows it, lamp gives a quick gold flash."""
+# Every Claude agent gets a traffic light in the menu bar:
+#   working = yellow, done (waiting for you) = green, needs you (permission) = red
+WORKING, DONE, NEEDS = "working", "done", "needs"
+FORGET_AFTER = {WORKING: 30 * 60, DONE: 3 * 3600, NEEDS: 3 * 3600}  # stale agents drop off
+
+
+def prune(st):
+    now = time.time()
+    st["agents"] = {k: a for k, a in st.get("agents", {}).items()
+                    if now - a.get("last", 0) < FORGET_AFTER.get(a.get("status"), 3600)}
+
+
+def set_status(sid, status, data, need):
+    """Record what this agent is doing. Returns a fresh token if the status changed."""
     if os.path.exists(PAUSED):
-        return
+        return None
+    now = time.time()
+    a = load(STATE, new_state()).get("agents", {}).get(sid)
+    if a and status == a.get("status") == WORKING and now - a.get("last", 0) < 60:
+        return None  # fast path: PostToolUse fires constantly, nothing new to say
     with locked():
         st = load(STATE, new_state())
-        token = uuid.uuid4().hex
-        st["pending"][sid] = {"token": token, "since": time.time(), "urgent": urgent,
-                              "red": False, **(info or {})}
+        prune(st)
+        a = st["agents"].get(sid) or {"first": now}
+        changed = a.get("status") != status
+        if changed or "title" not in a:
+            a.update(chat_info(data, need))
+        a["last"] = now
+        if changed:
+            a.update(status=status, since=now, token=uuid.uuid4().hex)
+            log(f"{status} {sid[:8]} {a.get('title', '')[:30]}")
+        st["agents"][sid] = a
         save(STATE, st)
-    log(f"{'URGENT' if urgent else 'done'} from {sid[:8]}")
-    spawn("_flash", "done")
-    if urgent:
-        spawn("_watch", sid, token)
+    return a["token"] if changed else None
 
 
 def clear(sid=None):
-    """You replied / clicked (sid) or ran `clear` (None = everything). Menu bar only."""
+    """Chat closed (sid) or `clear` (None = everything)."""
     st = load(STATE, new_state())
-    if sid is not None and sid not in st["pending"]:
-        return  # fast path: nothing to do, no lock
+    if sid is not None and sid not in st.get("agents", {}):
+        return
     with locked():
         st = load(STATE, new_state())
         if sid is None:
-            st["pending"] = {}
-        elif st["pending"].pop(sid, None) is None:
-            return
+            st["agents"] = {}
+        else:
+            st.get("agents", {}).pop(sid, None)
         save(STATE, st)
 
 
 def watch(sid, token):
     """Permission prompt still unanswered after a while -> one short red flash."""
     time.sleep(cfg()["red_after_sec"])
-    with locked():
-        st = load(STATE, new_state())
-        p = st["pending"].get(sid)
-        if not p or p["token"] != token:
-            return  # you already dealt with it
-        p["red"] = True
-        save(STATE, st)
-    flash("red")
+    a = load(STATE, new_state()).get("agents", {}).get(sid)
+    if a and a.get("token") == token and a.get("status") == NEEDS:
+        flash("red")
 
 
 def short(text, n=90):
@@ -377,13 +393,18 @@ def hook():
     event = data.get("hook_event_name", "")
     sid = data.get("session_id") or "default"
     if event == "Stop":
-        attention(sid, urgent=False, info=chat_info(data, last_text(data) or "Done"))
+        if set_status(sid, DONE, data, last_text(data) or "Done"):
+            spawn("_flash", "done")
     elif event == "Notification":
         kind = data.get("notification_type") or ""
         msg = data.get("message") or ""
         if kind in ("permission_prompt", "elicitation_dialog") or (not kind and "permission" in msg.lower()):
-            attention(sid, urgent=True, info=chat_info(data, msg or "Needs your answer"))
-    elif event in ("UserPromptSubmit", "PostToolUse", "SessionEnd"):
+            token = set_status(sid, NEEDS, data, msg or "Needs your answer")
+            if token:
+                spawn("_watch", sid, token)
+    elif event in ("UserPromptSubmit", "PostToolUse"):
+        set_status(sid, WORKING, data, "Working…")
+    elif event == "SessionEnd":
         clear(sid)
 
 
@@ -506,7 +527,9 @@ def status():
                               if not s or s["online"] else "NO - lamp isn't on Wi-Fi (fix in Govee Home app)"))
     print(f"locked:   {bool(c.get('locked'))}")
     print(f"paused:   {os.path.exists(PAUSED)}")
-    print(f"waiting:  {len(st['pending'])} chat(s)")
+    agents = st.get("agents", {}).values()
+    for name in (NEEDS, DONE, WORKING):
+        print(f"{name + ':':9} {sum(a.get('status') == name for a in agents)} agent(s)")
 
 
 def main():
@@ -537,8 +560,6 @@ def main():
     elif cmd == "clear":
         clear()
         print("Menu bar cleared.")
-    elif cmd == "seen":  # menu bar click on one chat
-        clear(sys.argv[2])
     elif cmd == "pause":
         open(PAUSED, "w").close()
         clear()
