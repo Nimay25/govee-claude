@@ -382,6 +382,11 @@ def setup():
 def demo():
     c = cfg()
     s = lamp_state(c)
+    if s and not s["online"]:
+        print("Govee says the lamp is OFFLINE (not on Wi-Fi). Phone-over-Bluetooth doesn't count.\n"
+              "Fix: Govee Home app -> the lamp -> gear icon -> Wi-Fi -> reconnect (2.4 GHz network).\n"
+              "Then run: python3 ~/govee-claude/govee_claude.py test")
+        return
     if not s or not s["on"]:
         print("Lamp is off (or unreachable), so it stays quiet. Turn it on and run: govee-claude test")
         return
@@ -460,6 +465,10 @@ def status():
     c = cfg()
     st = load(STATE, new_state())
     print(f"lamp:     {c.get('name') or 'not set up (run: govee-claude setup)'}")
+    if c.get("device"):
+        s = lamp_state(c)
+        print("online:   " + ("unknown" if not s else "yes, " + ("on" if s["on"] else "off")
+                              if not s or s["online"] else "NO - lamp isn't on Wi-Fi (fix in Govee Home app)"))
     print(f"paused:   {os.path.exists(PAUSED)}")
     print(f"showing:  {st.get('showing', 'vibe')}")
     print(f"waiting:  {len(st['pending'])} chat(s)")
