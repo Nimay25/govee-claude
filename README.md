@@ -4,10 +4,14 @@ Your Govee lamp, and a little orange guy in the menu bar, tell you when Claude n
 
 | Claude… | Lamp | Menu bar |
 |---|---|---|
-| finished a reply | warm gold | orange guy wiggles + chat title |
-| needs permission, unanswered 90s | slow red breathe, then red | guy turns red |
-| you reply / approve / click the guy | back to whatever it was | disappears |
+| finished a reply | quick gold flash (~2.5s), then back to your color | orange guy wiggles + chat title |
+| needs permission, ignored 90s | one quick red flash, then back | guy turns red |
+| you reply / approve / click the guy | (already back to normal) | disappears |
 | (lamp is off) | nothing | still shows |
+
+The lamp never holds a color. It always goes back to whatever color and brightness you had.
+If you use a Govee *scene* or different colors per light, the API can't read that,
+so after a flash you get one flat color. Pick a solid color in the app if that bugs you.
 
 Click the guy and it opens that exact chat (Claude desktop app) or the terminal it's in. Right-click shows every waiting chat.
 
@@ -26,14 +30,14 @@ python3 ~/govee-claude/govee_claude.py setup
 ## Commands
 
 ```
-python3 govee_claude.py test       # gold -> red -> back
+python3 govee_claude.py test       # quick gold flash, quick red flash
 python3 govee_claude.py status
-python3 govee_claude.py clear      # everything back to normal
+python3 govee_claude.py clear      # clear the menu bar
 python3 govee_claude.py pause      # stop reacting (resume to undo)
 python3 govee_claude.py uninstall  # remove the hooks
 ```
 
-Settings live in `~/.config/govee-claude/config.json` (`gold`, `red`, `red_after_sec`, `gold_max_min`, `min_brightness`). Logs: `~/.config/govee-claude/log.txt`.
+Settings live in `~/.config/govee-claude/config.json` (`gold`, `red`, `red_after_sec`, `flash_sec`, `min_brightness`). Logs: `~/.config/govee-claude/log.txt`.
 
 ## Battery
 

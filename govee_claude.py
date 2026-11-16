@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """govee-claude: your Govee lamp tells you when Claude needs you.
 
-  Claude finished          -> lamp goes warm gold
-  Claude is blocked on you -> gold, then pulses red if you don't answer
-  You reply                -> lamp goes back to whatever it was
-  Lamp is off              -> nothing happens
+  Claude finished          -> quick gold flash, then straight back to your color
+  Permission prompt you've ignored for 90s -> one quick red flash, then back
+  Menu bar guy             -> shows which chat needs you; click to jump there
+  Lamp is off              -> lamp does nothing (menu bar still works)
 
 No dependencies. Python 3 stdlib only.
 """
@@ -34,8 +34,8 @@ SCRIPT = os.path.realpath(__file__)
 DEFAULTS = {
     "gold": [255, 170, 0],     # "Claude's done / needs you"
     "red": [255, 25, 10],      # "Claude is blocked and you haven't looked"
-    "red_after_sec": 90,       # unanswered permission prompt -> red after this long
-    "gold_max_min": 20,        # give your vibe back after this long (0 = never)
+    "red_after_sec": 90,       # unanswered permission prompt -> one red flash after this long
+    "flash_sec": 2.5,          # how long a flash lasts before your color comes back
     "min_brightness": 30,      # so gold is visible even if the lamp is dimmed way down
 }
 
@@ -153,134 +153,96 @@ def set_brightness(c, v):
     control(c, RANGE, "brightness", max(1, min(100, int(v))))
 
 
-# ---------- looks ----------
-
-def show_gold(c, saved):
-    set_rgb(c, c["gold"])
-    if saved["brightness"] < c["min_brightness"]:
-        set_brightness(c, c["min_brightness"])
-
-
-def show_red(c, saved):
-    hi = max(saved["brightness"], 70)
-    set_rgb(c, c["red"])
-    for _ in range(3):          # slow breathe, not a strobe
-        set_brightness(c, 12)
-        time.sleep(0.7)
-        set_brightness(c, hi)
-        time.sleep(0.7)
-
-
-def restore(c, saved):
-    now = lamp_state(c)
-    if now and not now["on"]:
-        return  # you turned it off meanwhile; don't turn it back on
-    if saved["kelvin"]:
-        control(c, COLOR, "colorTemperatureK", saved["kelvin"])
-    else:
-        set_rgb(c, saved["rgb"])
-    set_brightness(c, saved["brightness"])
-
-
-def render(c, st):
-    """Make the lamp match the pending list (only if we took over the lamp)."""
-    saved = st.get("saved")
-    if not saved:
-        return
-    active = [p for p in st["pending"].values() if not p.get("quiet")]
-    want = "vibe" if not active else ("red" if any(p["red"] for p in active) else "gold")
-    if want == st.get("showing", "vibe"):
-        return
-    log(f"lamp -> {want}")
-    if want == "vibe":
-        restore(c, saved)
-        st["saved"] = None
-    elif want == "gold":
-        show_gold(c, saved)
-    else:
-        show_red(c, saved)
-    st["showing"] = want
-
+# ---------- the actual behaviour ----------
+# The lamp never *holds* a color: it flashes for a moment and goes straight back
+# to whatever you had. The menu bar is what keeps track of who's waiting.
 
 def new_state():
-    return {"pending": {}, "saved": None, "showing": "vibe"}
+    return {"pending": {}, "vibe": None}
 
 
-# ---------- the actual behaviour ----------
+def restore(c, s):
+    if s["kelvin"]:
+        control(c, COLOR, "colorTemperatureK", s["kelvin"])
+    else:
+        set_rgb(c, s["rgb"])
+    set_brightness(c, s["brightness"])
+
+
+def flash(color_name):
+    """Quick heads-up: show the color for a moment, then put your color back."""
+    c = cfg()
+    if not c.get("device"):
+        return
+    with locked():
+        s = lamp_state(c)
+        if not s or not s["on"] or not s["online"]:
+            log("lamp off/offline, menu bar only")
+            return
+        st = load(STATE, new_state())
+        ours = {rgb_int(c["gold"]), rgb_int(c["red"])}
+        if not s["kelvin"] and s["rgb"] in ours and st.get("vibe"):
+            s = st["vibe"]  # lamp still shows one of our colors -> use your last real color
+        else:
+            st["vibe"] = s
+            save(STATE, st)
+        log(f"flash {color_name}")
+        set_rgb(c, c[color_name])
+        if s["brightness"] < c["min_brightness"]:
+            set_brightness(c, c["min_brightness"])
+        time.sleep(c["flash_sec"])
+        restore(c, s)
+
+
+def spawn(*args):
+    """Run in the background so a hook timeout can never cut a flash off half way."""
+    subprocess.Popen([sys.executable, SCRIPT, *args],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True,
+                     env=os.environ.copy())
+
 
 def attention(sid, urgent, info=None):
-    """Record that a chat needs you (menu bar always sees it); light the lamp if it's on."""
-    c = cfg()
+    """A chat needs you: menu bar shows it, lamp gives a quick gold flash."""
     if os.path.exists(PAUSED):
         return
     with locked():
         st = load(STATE, new_state())
-        if not st.get("saved") and c.get("device"):
-            s = lamp_state(c)
-            if s and s["on"] and s["online"]:
-                st.update(saved=s, showing="vibe")
-            else:
-                log(f"lamp off/unreachable, menu bar only ({sid[:8]})")
         token = uuid.uuid4().hex
         st["pending"][sid] = {"token": token, "since": time.time(), "urgent": urgent,
-                              "red": False, "quiet": False, **(info or {})}
-        log(f"{'URGENT' if urgent else 'done'} from {sid[:8]}")
-        render(c, st)
+                              "red": False, **(info or {})}
         save(STATE, st)
-    spawn_watch(sid, token)
+    log(f"{'URGENT' if urgent else 'done'} from {sid[:8]}")
+    spawn("_flash", "gold")
+    if urgent:
+        spawn("_watch", sid, token)
 
 
 def clear(sid=None):
-    """You replied (sid) or ran `clear` (None = everything)."""
+    """You replied / clicked (sid) or ran `clear` (None = everything). Menu bar only."""
     st = load(STATE, new_state())
     if sid is not None and sid not in st["pending"]:
-        return  # fast path: nothing to do, no lock, no network
-    c = cfg()
+        return  # fast path: nothing to do, no lock
     with locked():
         st = load(STATE, new_state())
         if sid is None:
             st["pending"] = {}
         elif st["pending"].pop(sid, None) is None:
             return
-        render(c, st)
         save(STATE, st)
 
 
-def spawn_watch(sid, token):
-    subprocess.Popen([sys.executable, SCRIPT, "_watch", sid, token],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True,
-                     env=os.environ.copy())
-
-
 def watch(sid, token):
-    """Background: escalate to red, or hand the vibe back after a while."""
-    c = cfg()
-    while True:
-        with locked():
-            st = load(STATE, new_state())
-            p = st["pending"].get(sid)
-            if not p or p["token"] != token:
-                return  # you already replied, or something newer took over
-            age = time.time() - p["since"]
-            if p["urgent"]:
-                if age >= c["red_after_sec"]:
-                    p["red"] = True
-                    render(c, st)
-                    save(STATE, st)
-                    return  # red stays until you deal with it
-                wait = c["red_after_sec"] - age
-            else:
-                limit = c["gold_max_min"] * 60
-                if not limit:
-                    return
-                if age >= limit:
-                    p["quiet"] = True  # lamp goes back to your vibe; menu bar keeps it
-                    render(c, st)
-                    save(STATE, st)
-                    return
-                wait = limit - age
-        time.sleep(max(1, wait))
+    """Permission prompt still unanswered after a while -> one short red flash."""
+    time.sleep(cfg()["red_after_sec"])
+    with locked():
+        st = load(STATE, new_state())
+        p = st["pending"].get(sid)
+        if not p or p["token"] != token:
+            return  # you already dealt with it
+        p["red"] = True
+        save(STATE, st)
+    flash("red")
 
 
 def short(text, n=90):
@@ -376,7 +338,7 @@ def setup():
     save(CONFIG, conf, private=True)
     print(f"\nSaved. Using '{d.get('deviceName')}'. Make sure it's ON, watch it now...")
     demo()
-    print("\nIf the lamp went gold -> red -> back to normal, you're done.")
+    print("\nIf the lamp flashed gold, then red, then went back to your color, you're done.")
 
 
 def demo():
@@ -390,12 +352,9 @@ def demo():
     if not s or not s["on"]:
         print("Lamp is off (or unreachable), so it stays quiet. Turn it on and run: govee-claude test")
         return
-    with locked():
-        show_gold(c, s)
-        time.sleep(3)
-        show_red(c, s)
-        time.sleep(1.5)
-        restore(c, s)
+    flash("gold")
+    time.sleep(1.5)
+    flash("red")
 
 
 def hook_cmd():
@@ -470,7 +429,6 @@ def status():
         print("online:   " + ("unknown" if not s else "yes, " + ("on" if s["on"] else "off")
                               if not s or s["online"] else "NO - lamp isn't on Wi-Fi (fix in Govee Home app)"))
     print(f"paused:   {os.path.exists(PAUSED)}")
-    print(f"showing:  {st.get('showing', 'vibe')}")
     print(f"waiting:  {len(st['pending'])} chat(s)")
 
 
@@ -486,6 +444,11 @@ def main():
             watch(sys.argv[2], sys.argv[3])
         except Exception as e:
             log(f"watch error: {e!r}")
+    elif cmd == "_flash":
+        try:
+            flash(sys.argv[2])
+        except Exception as e:
+            log(f"flash error: {e!r}")
     elif cmd == "setup":
         setup()
     elif cmd == "test":
@@ -496,13 +459,13 @@ def main():
         uninstall()
     elif cmd == "clear":
         clear()
-        print("Lamp back to normal.")
+        print("Menu bar cleared.")
     elif cmd == "seen":  # menu bar click on one chat
         clear(sys.argv[2])
     elif cmd == "pause":
         open(PAUSED, "w").close()
         clear()
-        print("Paused. Lamp won't react until: govee-claude resume")
+        print("Paused. Nothing reacts until: govee-claude resume")
     elif cmd == "resume":
         if os.path.exists(PAUSED):
             os.remove(PAUSED)
