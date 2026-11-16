@@ -39,10 +39,30 @@ cat > "$AGENT" <<EOF
 </dict></plist>
 EOF
 launchctl bootout "gui/$(id -u)/com.govee-claude.bar" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$AGENT"
+for i in 1 2 3 4 5 6 7 8 9 10; do   # bootout finishes in the background; retry until it's gone
+  launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null && break
+  sleep 0.5
+done
 
 echo "• adding Claude Code hooks"
 "$PY" govee_claude.py install
 
+echo "• letting the Chrome extension talk to this script (claude.ai web chats)"
+HOST="$HERE/web/host.sh"
+printf '#!/bin/bash\nexec "%s" "%s/govee_claude.py" web\n' "$PY" "$HERE" > "$HOST"
+chmod +x "$HOST"
+NM="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+mkdir -p "$NM"
+cat > "$NM/com.govee_claude.web.json" <<JSON
+{
+  "name": "com.govee_claude.web",
+  "description": "Claude Lamp: claude.ai web chats",
+  "path": "$HOST",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://cdidfmohkckgfkcdodohbiehbcfcdadh/"]
+}
+JSON
+echo "  Then load the extension once: chrome://extensions -> Developer mode -> Load unpacked -> $HERE/web/extension"
+
 echo
-echo "Done. Next: python3 govee_claude.py setup   (paste your Govee API key)"
+echo "Done. First time? Run: python3 govee_claude.py setup   (paste your Govee API key)"

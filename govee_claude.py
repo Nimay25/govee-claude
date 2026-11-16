@@ -291,7 +291,7 @@ def prune(st):
                     if now - a.get("last", 0) < FORGET_AFTER.get(a.get("status"), 3600)}
 
 
-def set_status(sid, status, data, need):
+def set_status(sid, status, data, need, info=None):
     """Record what this agent is doing. Returns a fresh token if the status changed."""
     if os.path.exists(PAUSED):
         return None
@@ -305,7 +305,7 @@ def set_status(sid, status, data, need):
         a = st["agents"].get(sid) or {"first": now}
         changed = a.get("status") != status
         if changed or "title" not in a:
-            a.update(chat_info(data, need))
+            a.update(info or chat_info(data, need))
         a["last"] = now
         if changed:
             a.update(status=status, since=now, token=uuid.uuid4().hex)
@@ -406,6 +406,31 @@ def hook():
         set_status(sid, WORKING, data, "Working…")
     elif event == "SessionEnd":
         clear(sid)
+
+
+def web():
+    """Chrome native-messaging host: the claude.ai extension reports working / done / end."""
+    import struct
+    raw = sys.stdin.buffer.read(4)
+    if len(raw) < 4:
+        return
+    msg = json.loads(sys.stdin.buffer.read(struct.unpack("=I", raw)[0]))
+    sid = str(msg.get("id") or "web")
+    event = msg.get("event")
+    url = str(msg.get("url") or "")
+    info = {"title": short(msg.get("title") or "claude.ai chat", 60),
+            "link": url if url.startswith("https://claude.ai/") else "",
+            "app": "com.google.Chrome"}
+    if event == "working":
+        set_status(sid, WORKING, {}, "Working…", {**info, "need": "Working…"})
+    elif event == "done":
+        if set_status(sid, DONE, {}, "Done", {**info, "need": "Done · claude.ai"}):
+            spawn("_flash", "done")
+    elif event == "end":
+        clear(sid)
+    out = json.dumps({"ok": True}).encode()
+    sys.stdout.buffer.write(struct.pack("=I", len(out)) + out)
+    sys.stdout.buffer.flush()
 
 
 # ---------- setup / commands ----------
@@ -568,6 +593,11 @@ def main():
         if os.path.exists(PAUSED):
             os.remove(PAUSED)
         print("Back on.")
+    elif cmd == "web":
+        try:
+            web()
+        except Exception as e:
+            log(f"web error: {e!r}")
     elif cmd == "color":
         set_color(" ".join(sys.argv[2:]))
     elif cmd == "lock":
