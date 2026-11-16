@@ -36,7 +36,7 @@ DEFAULTS = {
     "red": [255, 25, 10],      # "Claude is blocked and you haven't looked"
     "red_after_sec": 90,       # unanswered permission prompt -> one red flash after this long
     "flash_sec": 2.5,          # how long the red flash lasts before your color comes back
-    "green": [40, 230, 110],   # "Claude's done" sweep color
+    "green": [10, 255, 0],     # "Claude's done" sweep color (traffic-light green)
     "sweep_order": [0, 1, 2],  # which light goes first (top -> middle -> bottom)
     "sweep_step_sec": 0.45,    # gap between lights
     "sweep_hold_sec": 1.0,     # all three green this long, then back
@@ -48,9 +48,9 @@ RANGE = "devices.capabilities.range"
 SEGMENT = "devices.capabilities.segment_color_setting"
 
 NAMED = {
-    "deep purple": [88, 0, 220], "purple": [120, 30, 255], "violet": [150, 60, 255],
+    "deep purple": [70, 0, 255], "purple": [120, 30, 255], "violet": [150, 60, 255],
     "pink": [255, 60, 160], "red": [255, 20, 10], "orange": [255, 90, 0],
-    "gold": [255, 170, 0], "green": [30, 255, 90], "teal": [0, 200, 170],
+    "gold": [255, 170, 0], "green": [10, 255, 0], "teal": [0, 200, 170],
     "blue": [0, 0, 255], "ice": [120, 200, 255], "white": [255, 255, 255],
 }
 NAMED_WHITES = {"warm": 2700, "warm white": 2700, "soft white": 3500, "daylight": 6500}
