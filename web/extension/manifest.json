@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Lamp (web)",
+  "version": "1.0",
+  "description": "Tells the Claude Lamp menu bar + Govee lamp when a claude.ai chat is working or done.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy0NcSg79JvP/u/W0fFgidk13GAtJBKXyYEZbren92a6zSJR/+xWcEXm2SmFYEBrrwujURD1HUXro654tLwtPkluKAumKeSbn8k85f6lFYZ9p4A2W1bf4D4OUuX7kmwGP/ilCf0kKZInFZamx7xinuYlGWz199lV1HSseqX46ievbjY947wYTXQlivRibEsIiy5PloLl73tKuveYfeNvVegAbUE+/ZL+G1AqVCGc6e8MeA3uynqxJOzQ0XP1oN+1i628y4SbFfllqv08DvStMdEXbzuwZOW2L0TabVuJnJn31l7YIt+CmTZs59DRAjECw+4+fP2pzSbjzFbCqZTBKFwIDAQAB",
+  "permissions": ["nativeMessaging"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["https://claude.ai/*"], "js": ["content.js"], "run_at": "document_idle" }]
+}
