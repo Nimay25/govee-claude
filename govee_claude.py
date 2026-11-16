@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """govee-claude: your Govee lamp tells you when Claude needs you.
 
-  Claude finished          -> quick gold flash, then straight back to your color
+  Claude finished          -> green fills the lamp top -> middle -> bottom, then back to your color
   Permission prompt you've ignored for 90s -> one quick red flash, then back
   Menu bar guy             -> shows which chat needs you; click to jump there
   Lamp is off              -> lamp does nothing (menu bar still works)
@@ -35,12 +35,25 @@ DEFAULTS = {
     "gold": [255, 170, 0],     # "Claude's done / needs you"
     "red": [255, 25, 10],      # "Claude is blocked and you haven't looked"
     "red_after_sec": 90,       # unanswered permission prompt -> one red flash after this long
-    "flash_sec": 2.5,          # how long a flash lasts before your color comes back
+    "flash_sec": 2.5,          # how long the red flash lasts before your color comes back
+    "green": [40, 230, 110],   # "Claude's done" sweep color
+    "sweep_order": [0, 1, 2],  # which light goes first (top -> middle -> bottom)
+    "sweep_step_sec": 0.45,    # gap between lights
+    "sweep_hold_sec": 1.0,     # all three green this long, then back
     "min_brightness": 30,      # so gold is visible even if the lamp is dimmed way down
 }
 
 COLOR = "devices.capabilities.color_setting"
 RANGE = "devices.capabilities.range"
+SEGMENT = "devices.capabilities.segment_color_setting"
+
+NAMED = {
+    "deep purple": [88, 0, 220], "purple": [120, 30, 255], "violet": [150, 60, 255],
+    "pink": [255, 60, 160], "red": [255, 20, 10], "orange": [255, 90, 0],
+    "gold": [255, 170, 0], "green": [30, 255, 90], "teal": [0, 200, 170],
+    "blue": [0, 0, 255], "ice": [120, 200, 255], "white": [255, 255, 255],
+}
+NAMED_WHITES = {"warm": 2700, "warm white": 2700, "soft white": 3500, "daylight": 6500}
 FAKE_MODE = bool(os.environ.get("GOVEE_FAKE"))
 
 
@@ -169,8 +182,27 @@ def restore(c, s):
     set_brightness(c, s["brightness"])
 
 
-def flash(color_name):
-    """Quick heads-up: show the color for a moment, then put your color back."""
+def set_segment(c, seg, rgb):
+    control(c, SEGMENT, "segmentedColorRgb", {"segment": [seg], "rgb": rgb_int(rgb)})
+
+
+def home_color(c, st):
+    """The color to come back to: your locked color, or whatever the lamp is on right now."""
+    if c.get("locked"):
+        return c["locked"]
+    s = lamp_state(c)
+    ours = {rgb_int(c["gold"]), rgb_int(c["red"]), rgb_int(c["green"])}
+    if s and not s["kelvin"] and s["rgb"] in ours and st.get("vibe"):
+        return st["vibe"]  # Govee still reports one of our colors (it lags) -> your last real one
+    if s:
+        st["vibe"] = s
+        save(STATE, st)
+    return s
+
+
+def flash(kind):
+    """kind = "done": green fills top -> middle -> bottom, then your color comes back.
+       kind = "red":  one quick red flash, then your color comes back."""
     c = cfg()
     if not c.get("device"):
         return
@@ -179,19 +211,63 @@ def flash(color_name):
         if not s or not s["on"] or not s["online"]:
             log("lamp off/offline, menu bar only")
             return
-        st = load(STATE, new_state())
-        ours = {rgb_int(c["gold"]), rgb_int(c["red"])}
-        if not s["kelvin"] and s["rgb"] in ours and st.get("vibe"):
-            s = st["vibe"]  # lamp still shows one of our colors -> use your last real color
-        else:
-            st["vibe"] = s
-            save(STATE, st)
-        log(f"flash {color_name}")
-        set_rgb(c, c[color_name])
-        if s["brightness"] < c["min_brightness"]:
+        home = home_color(c, load(STATE, new_state()))
+        log(f"flash {kind}")
+        if home["brightness"] < c["min_brightness"]:
             set_brightness(c, c["min_brightness"])
-        time.sleep(c["flash_sec"])
-        restore(c, s)
+        if kind == "done":
+            for seg in c["sweep_order"]:
+                set_segment(c, seg, c["green"])
+                time.sleep(c["sweep_step_sec"])
+            time.sleep(c["sweep_hold_sec"])
+        else:
+            set_rgb(c, c["red"])
+            time.sleep(c["flash_sec"])
+        restore(c, home)
+
+
+def set_color(text):
+    """`color purple` / `color #5800dc` / `color 88,0,220` / `color warm` (+ optional brightness)."""
+    c = cfg()
+    parts = text.split()
+    bright = int(parts.pop()) if len(parts) > 1 and parts[-1].isdigit() else None
+    name = " ".join(parts).lower().strip()
+    s = lamp_state(c) or {"brightness": 50}
+    home = {"on": True, "online": True, "rgb": 0, "kelvin": 0,
+            "brightness": bright or s["brightness"]}
+    if name in NAMED_WHITES:
+        home["kelvin"] = NAMED_WHITES[name]
+    elif name in NAMED:
+        home["rgb"] = rgb_int(NAMED[name])
+    elif name.startswith("#") and len(name) == 7:
+        home["rgb"] = int(name[1:], 16)
+    elif name.count(",") == 2:
+        home["rgb"] = rgb_int([int(x) for x in name.split(",")])
+    else:
+        sys.exit(f"Don't know '{name}'. Try: {', '.join(list(NAMED) + list(NAMED_WHITES))}, #rrggbb, or r,g,b")
+    with locked():
+        restore(c, home)
+        st = load(STATE, new_state())
+        st["vibe"] = home
+        save(STATE, st)
+    if c.get("locked"):  # you picked it on purpose -> that's the new locked color
+        conf = load(CONFIG, {})
+        conf["locked"] = home
+        save(CONFIG, conf, private=True)
+    print(f"Lamp set to {name}" + (f" at {home['brightness']}%" if bright else "") +
+          (" (locked)" if c.get("locked") else ""))
+
+
+def lock(on):
+    conf = load(CONFIG, {})
+    if on:
+        st = load(STATE, new_state())
+        conf["locked"] = st.get("vibe") or lamp_state(cfg())
+        print("Locked: after every flash the lamp goes back to this exact color.")
+    else:
+        conf.pop("locked", None)
+        print("Unlocked: after a flash the lamp goes back to whatever it was on.")
+    save(CONFIG, conf, private=True)
 
 
 def spawn(*args):
@@ -213,7 +289,7 @@ def attention(sid, urgent, info=None):
                               "red": False, **(info or {})}
         save(STATE, st)
     log(f"{'URGENT' if urgent else 'done'} from {sid[:8]}")
-    spawn("_flash", "gold")
+    spawn("_flash", "done")
     if urgent:
         spawn("_watch", sid, token)
 
@@ -352,7 +428,7 @@ def demo():
     if not s or not s["on"]:
         print("Lamp is off (or unreachable), so it stays quiet. Turn it on and run: govee-claude test")
         return
-    flash("gold")
+    flash("done")
     time.sleep(1.5)
     flash("red")
 
@@ -428,6 +504,7 @@ def status():
         s = lamp_state(c)
         print("online:   " + ("unknown" if not s else "yes, " + ("on" if s["on"] else "off")
                               if not s or s["online"] else "NO - lamp isn't on Wi-Fi (fix in Govee Home app)"))
+    print(f"locked:   {bool(c.get('locked'))}")
     print(f"paused:   {os.path.exists(PAUSED)}")
     print(f"waiting:  {len(st['pending'])} chat(s)")
 
@@ -470,11 +547,19 @@ def main():
         if os.path.exists(PAUSED):
             os.remove(PAUSED)
         print("Back on.")
+    elif cmd == "color":
+        set_color(" ".join(sys.argv[2:]))
+    elif cmd == "lock":
+        lock(True)
+    elif cmd == "unlock":
+        lock(False)
+    elif cmd == "sweep":  # just the "Claude's done" animation
+        flash("done")
     elif cmd == "status":
         status()
     else:
         print(__doc__)
-        print("commands: setup | test | install | uninstall | clear | pause | resume | status")
+        print("commands: setup | test | sweep | color <name> [brightness] | lock | unlock | clear | pause | resume | status | install | uninstall")
 
 
 if __name__ == "__main__":
