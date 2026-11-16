@@ -16,7 +16,7 @@ The lamp never holds a color. It always goes back to whatever color and brightne
 If you use a Govee *scene* or different colors per light, the API can't read that,
 so after a flash you get one flat color. Pick a solid color in the app if that bugs you.
 
-Works with Claude Code (CLI and the Code tab in the desktop app) through hooks. Plain claude.ai web chats have no hooks, so they don't trigger it.
+Works with Claude Code (CLI and the Code tab in the desktop app) through hooks, and with **claude.ai in Chrome** through a tiny extension in `web/extension`. Load it once: `chrome://extensions` → Developer mode → Load unpacked → pick `web/extension`. (Chat tabs inside the Claude desktop app itself aren't covered.)
 
 ## Install
 
