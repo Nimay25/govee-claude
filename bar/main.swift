@@ -181,6 +181,25 @@ final class Bar: NSObject, NSApplicationDelegate {
         }
     }
 
+    // "Done 4m ago · <what it said>" (the menu is rebuilt on every click, so it's always current)
+    func detailLine(_ a: Agent) -> String {
+        let need = a.need.trimmingCharacters(in: .whitespaces)
+        let head = "\(label(a.status)) \(ago(a.since))"
+        return need.isEmpty || need == "Done" || need == label(a.status) ? head : "\(head) · \(need)"
+    }
+
+    func span(_ t: Double) -> String {   // "", "4m", "2h", "1h 5m"
+        let m = Int(max(0, Date().timeIntervalSince1970 - t) / 60)
+        if m < 1 { return "" }
+        if m < 60 { return "\(m)m" }
+        return m % 60 == 0 ? "\(m / 60)h" : "\(m / 60)h \(m % 60)m"
+    }
+
+    func ago(_ t: Double) -> String {
+        let s = span(t)
+        return s.isEmpty ? "just now" : s + " ago"
+    }
+
     func label(_ s: String) -> String {
         s == "done" ? "Done" : s == "needs" ? "Needs you" : "Working"
     }
@@ -216,7 +235,7 @@ final class Bar: NSObject, NSApplicationDelegate {
             mi.image = dotImage(a.color)
             let s = NSMutableAttributedString(string: a.title + "\n",
                                               attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
-            let detail = a.status == "working" ? "Working…" : "\(label(a.status)) · \(a.need)"
+            let detail = a.status == "working" ? (span(a.since).isEmpty ? "Working…" : "Working for \(span(a.since))") : detailLine(a)
             s.append(NSAttributedString(string: detail, attributes: [
                 .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
             mi.attributedTitle = s

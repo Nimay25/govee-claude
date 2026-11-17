@@ -424,7 +424,7 @@ def web():
     if event == "working":
         set_status(sid, WORKING, {}, "Working…", {**info, "need": "Working…"})
     elif event == "done":
-        if set_status(sid, DONE, {}, "Done", {**info, "need": "Done · claude.ai"}):
+        if set_status(sid, DONE, {}, "Done", {**info, "need": "claude.ai"}):
             spawn("_flash", "done")
     elif event == "end":
         clear(sid)
