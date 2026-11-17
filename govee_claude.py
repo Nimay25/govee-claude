@@ -2,6 +2,7 @@
 """govee-claude: your Govee lamp tells you when Claude needs you.
 
   Claude finished          -> green fills the lamp top -> middle -> bottom, then back to your color
+  Claude asks you something / needs permission -> same sweep in red, then back
   Permission prompt you've ignored for 90s -> one quick red flash, then back
   Menu bar                 -> Claude logo + a traffic light per agent (yellow working,
                               green done, red needs you); click to jump to that chat
@@ -202,8 +203,9 @@ def home_color(c, st):
 
 
 def flash(kind):
-    """kind = "done": green fills top -> middle -> bottom, then your color comes back.
-       kind = "red":  one quick red flash, then your color comes back."""
+    """kind = "done":  green fills top -> middle -> bottom, then your color comes back.
+       kind = "needs": same sweep in red (Claude asked you something / wants permission).
+       kind = "red":   one quick red flash (reminder), then your color comes back."""
     c = cfg()
     if not c.get("device"):
         return
@@ -216,9 +218,10 @@ def flash(kind):
         log(f"flash {kind}")
         if home["brightness"] < c["min_brightness"]:
             set_brightness(c, c["min_brightness"])
-        if kind == "done":
+        if kind in ("done", "needs"):
+            color = c["green"] if kind == "done" else c["red"]
             for seg in c["sweep_order"]:
-                set_segment(c, seg, c["green"])
+                set_segment(c, seg, color)
                 time.sleep(c["sweep_step_sec"])
             time.sleep(c["sweep_hold_sec"])
         else:
@@ -360,29 +363,49 @@ def chat_info(data, need):
     }
 
 
-def last_text(data):
-    """First bit of Claude's final message, from the transcript."""
-    if data.get("last_assistant_message"):
-        return short(data["last_assistant_message"])
+def asks(text):
+    """Does this message end by asking you something?"""
+    tail = (text or "").strip().split("\n")[-1].rstrip(" *_`)\"'\u201d\u2019")
+    return tail.endswith("?")
+
+
+def final_turn(data):
+    """(Claude's final message, the question it asked you or "") for this turn, from the transcript."""
+    text = data.get("last_assistant_message") or ""
+    question = text.strip().split("\n")[-1] if asks(text) else ""
     try:
         with open(data["transcript_path"], "rb") as f:
             f.seek(0, 2)
             f.seek(max(0, f.tell() - 300_000))
             lines = f.read().decode("utf-8", "ignore").splitlines()
     except (OSError, KeyError, TypeError):
-        return ""
+        lines = []
     for line in reversed(lines):
         try:
             obj = json.loads(line)
         except ValueError:
             continue
+        content = obj.get("message", {}).get("content", [])
+        if not isinstance(content, list):
+            content = [{"type": "text", "text": str(content)}]
+        if obj.get("type") == "user":
+            if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in content):
+                continue
+            break  # reached your last message: the turn is over
         if obj.get("type") != "assistant":
             continue
-        content = obj.get("message", {}).get("content", [])
-        text = " ".join(x.get("text", "") for x in content if isinstance(x, dict) and x.get("type") == "text")
-        if text.strip():
-            return short(text)
-    return ""
+        for x in content:
+            if not isinstance(x, dict):
+                continue
+            if x.get("type") == "text" and x.get("text", "").strip() and not text:
+                text = x["text"]
+                if asks(text):
+                    question = text.strip().split("\n")[-1]
+            # the desktop app's next-step box ("Commit this?") counts as a question
+            if x.get("type") == "tool_use" and x.get("name", "").endswith("wrap_up") \
+                    and (x.get("input") or {}).get("ask") and not question:
+                question = x["input"]["ask"]
+    return short(text), short(question.replace("**", "").replace("`", "").strip(" *_#>"))
 
 
 def hook():
@@ -393,14 +416,23 @@ def hook():
     event = data.get("hook_event_name", "")
     sid = data.get("session_id") or "default"
     if event == "Stop":
-        if set_status(sid, DONE, data, last_text(data) or "Done"):
+        text, question = final_turn(data)
+        if question:  # it stopped to ask you something -> red
+            if set_status(sid, NEEDS, data, question):
+                spawn("_flash", "needs")
+        elif set_status(sid, DONE, data, text or "Done"):
             spawn("_flash", "done")
+    elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
+        qs = (data.get("tool_input") or {}).get("questions") or [{}]
+        if set_status(sid, NEEDS, data, qs[0].get("question") or "Asked you a question"):
+            spawn("_flash", "needs")
     elif event == "Notification":
         kind = data.get("notification_type") or ""
         msg = data.get("message") or ""
         if kind in ("permission_prompt", "elicitation_dialog") or (not kind and "permission" in msg.lower()):
             token = set_status(sid, NEEDS, data, msg or "Needs your answer")
             if token:
+                spawn("_flash", "needs")
                 spawn("_watch", sid, token)
     elif event in ("UserPromptSubmit", "PostToolUse"):
         set_status(sid, WORKING, data, "Working…")
@@ -424,7 +456,11 @@ def web():
     if event == "working":
         set_status(sid, WORKING, {}, "Working…", {**info, "need": "Working…"})
     elif event == "done":
-        if set_status(sid, DONE, {}, "Done", {**info, "need": "claude.ai"}):
+        question = short(msg.get("question") or "")
+        if question:  # Claude ended by asking you something -> red
+            if set_status(sid, NEEDS, {}, question, {**info, "need": question}):
+                spawn("_flash", "needs")
+        elif set_status(sid, DONE, {}, "Done", {**info, "need": "claude.ai"}):
             spawn("_flash", "done")
     elif event == "end":
         clear(sid)
@@ -460,7 +496,7 @@ def setup():
     save(CONFIG, conf, private=True)
     print(f"\nSaved. Using '{d.get('deviceName')}'. Make sure it's ON, watch it now...")
     demo()
-    print("\nIf the lamp flashed gold, then red, then went back to your color, you're done.")
+    print("\nIf the lamp swept green, then red, then went back to your color, you're done.")
 
 
 def demo():
@@ -476,7 +512,7 @@ def demo():
         return
     flash("done")
     time.sleep(1.5)
-    flash("red")
+    flash("needs")
 
 
 def hook_cmd():
@@ -489,6 +525,7 @@ HOOK_EVENTS = {
     "Notification": "permission_prompt|elicitation_dialog",
     "UserPromptSubmit": None,
     "PostToolUse": "*",
+    "PreToolUse": "AskUserQuestion",
     "SessionEnd": None,
 }
 

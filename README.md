@@ -8,9 +8,9 @@ Your Govee lamp, and a little orange guy in the menu bar, tell you when Claude n
 - 🟢 **green**: done, waiting for you
 - 🔴 **red**: stopped, needs something from you (a permission prompt)
 
-Click it for the list of agents. Pick one to jump straight to that chat. The logo does a quick spin when one finishes or needs you.
+Click it for the list of agents, with how long each one has been done or waiting. Pick one to jump straight to that chat. The logo does a quick spin when one finishes or needs you.
 
-**Lamp:** when an agent finishes, green fills the 3 lights top → middle → bottom, then it goes back to your color. A permission prompt left unanswered for 90s gets one quick red flash. If the lamp is off, it does nothing (the menu bar still works).
+**Lamp:** when an agent finishes, green fills the 3 lights top → middle → bottom, then it goes back to your color. When it stops to **ask you something** (a question at the end of its reply, a question box, or a permission prompt), the same sweep happens in **red**. A permission prompt left unanswered for 90s gets one extra quick red flash. If the lamp is off, it does nothing (the menu bar still works).
 
 The lamp never holds a color. It always goes back to whatever color and brightness you had.
 If you use a Govee *scene* or different colors per light, the API can't read that,
@@ -31,7 +31,7 @@ python3 ~/govee-claude/govee_claude.py setup
 ## Commands
 
 ```
-python3 govee_claude.py test       # green sweep, then quick red flash
+python3 govee_claude.py test       # green sweep, then red sweep
 python3 govee_claude.py sweep      # just the green sweep
 python3 govee_claude.py color deep purple 44   # set the lamp (name, #hex or r,g,b, + brightness)
 python3 govee_claude.py lock       # always come back to the current color after a flash
