@@ -40,7 +40,7 @@ DEFAULTS = {
     "red_after_sec": 90,       # unanswered permission prompt -> one red flash after this long
     "flash_sec": 2.5,          # how long the red flash lasts before your color comes back
     "green": [10, 255, 0],     # "Claude's done" sweep color (traffic-light green)
-    "yellow": [255, 190, 0],   # "Claude asked you a question" sweep color
+    "yellow": [255, 235, 0],   # "Claude asked you a question" sweep color (traffic-light yellow)
     "sweep_order": [0, 1, 2],  # which light goes first (top -> middle -> bottom)
     "sweep_step_sec": 0.45,    # gap between lights
     "sweep_hold_sec": 1.0,     # all three green this long, then back
