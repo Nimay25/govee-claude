@@ -2,7 +2,8 @@
 """govee-claude: your Govee lamp tells you when Claude needs you.
 
   Claude finished          -> green fills the lamp top -> middle -> bottom, then back to your color
-  Claude asks you something / needs permission -> same sweep in red, then back
+  Claude asks you a question -> same sweep in yellow, then back
+  Claude needs permission    -> same sweep in red, then back
   Permission prompt you've ignored for 90s -> one quick red flash, then back
   Menu bar                 -> Claude logo + a traffic light per agent (yellow working,
                               green done, red needs you); click to jump to that chat
@@ -39,6 +40,7 @@ DEFAULTS = {
     "red_after_sec": 90,       # unanswered permission prompt -> one red flash after this long
     "flash_sec": 2.5,          # how long the red flash lasts before your color comes back
     "green": [10, 255, 0],     # "Claude's done" sweep color (traffic-light green)
+    "yellow": [255, 190, 0],   # "Claude asked you a question" sweep color
     "sweep_order": [0, 1, 2],  # which light goes first (top -> middle -> bottom)
     "sweep_step_sec": 0.45,    # gap between lights
     "sweep_hold_sec": 1.0,     # all three green this long, then back
@@ -193,7 +195,7 @@ def home_color(c, st):
     if c.get("locked"):
         return c["locked"]
     s = lamp_state(c)
-    ours = {rgb_int(c["gold"]), rgb_int(c["red"]), rgb_int(c["green"])}
+    ours = {rgb_int(c["gold"]), rgb_int(c["red"]), rgb_int(c["green"]), rgb_int(c["yellow"])}
     if s and not s["kelvin"] and s["rgb"] in ours and st.get("vibe"):
         return st["vibe"]  # Govee still reports one of our colors (it lags) -> your last real one
     if s:
@@ -204,7 +206,8 @@ def home_color(c, st):
 
 def flash(kind):
     """kind = "done":  green fills top -> middle -> bottom, then your color comes back.
-       kind = "needs": same sweep in red (Claude asked you something / wants permission).
+       kind = "ask":   same sweep in yellow (Claude asked you a question).
+       kind = "needs": same sweep in red (Claude wants permission).
        kind = "red":   one quick red flash (reminder), then your color comes back."""
     c = cfg()
     if not c.get("device"):
@@ -218,8 +221,8 @@ def flash(kind):
         log(f"flash {kind}")
         if home["brightness"] < c["min_brightness"]:
             set_brightness(c, c["min_brightness"])
-        if kind in ("done", "needs"):
-            color = c["green"] if kind == "done" else c["red"]
+        if kind in ("done", "ask", "needs"):
+            color = {"done": c["green"], "ask": c["yellow"], "needs": c["red"]}[kind]
             for seg in c["sweep_order"]:
                 set_segment(c, seg, color)
                 time.sleep(c["sweep_step_sec"])
@@ -417,15 +420,15 @@ def hook():
     sid = data.get("session_id") or "default"
     if event == "Stop":
         text, question = final_turn(data)
-        if question:  # it stopped to ask you something -> red
+        if question:  # it stopped to ask you something -> yellow sweep, red dot
             if set_status(sid, NEEDS, data, question):
-                spawn("_flash", "needs")
+                spawn("_flash", "ask")
         elif set_status(sid, DONE, data, text or "Done"):
             spawn("_flash", "done")
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
         qs = (data.get("tool_input") or {}).get("questions") or [{}]
         if set_status(sid, NEEDS, data, qs[0].get("question") or "Asked you a question"):
-            spawn("_flash", "needs")
+            spawn("_flash", "ask")
     elif event == "Notification":
         kind = data.get("notification_type") or ""
         msg = data.get("message") or ""
@@ -457,9 +460,9 @@ def web():
         set_status(sid, WORKING, {}, "Working…", {**info, "need": "Working…"})
     elif event == "done":
         question = short(msg.get("question") or "")
-        if question:  # Claude ended by asking you something -> red
+        if question:  # Claude ended by asking you something -> yellow sweep
             if set_status(sid, NEEDS, {}, question, {**info, "need": question}):
-                spawn("_flash", "needs")
+                spawn("_flash", "ask")
         elif set_status(sid, DONE, {}, "Done", {**info, "need": "claude.ai"}):
             spawn("_flash", "done")
     elif event == "end":
@@ -496,7 +499,7 @@ def setup():
     save(CONFIG, conf, private=True)
     print(f"\nSaved. Using '{d.get('deviceName')}'. Make sure it's ON, watch it now...")
     demo()
-    print("\nIf the lamp swept green, then red, then went back to your color, you're done.")
+    print("\nIf the lamp swept green, then yellow, then red, then went back to your color, you're done.")
 
 
 def demo():
@@ -511,6 +514,8 @@ def demo():
         print("Lamp is off (or unreachable), so it stays quiet. Turn it on and run: govee-claude test")
         return
     flash("done")
+    time.sleep(1.5)
+    flash("ask")
     time.sleep(1.5)
     flash("needs")
 
