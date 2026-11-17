@@ -47,3 +47,7 @@ Settings live in `~/.config/govee-claude/config.json` (`green`, `sweep_order`, `
 ## Battery
 
 The menu bar app doesn't poll. macOS wakes it only when the state file changes. The logo spins for about 2 seconds when an agent finishes or needs you; otherwise it uses 0% CPU. Hooks are async, so they never slow Claude down. The lamp is only called when something changes, a few requests per reply, well under Govee's daily limit.
+
+## License
+
+[MIT](LICENSE)
