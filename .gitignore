@@ -3,3 +3,8 @@ __pycache__/
 .DS_Store
 config.json
 web/host.sh
+# private: never commit (HQ status reporting reads these from ~/.config, outside the repo)
+*.env
+.env*
+agent.env
+hq-sent.json

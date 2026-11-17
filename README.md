@@ -51,3 +51,19 @@ The menu bar app doesn't poll. macOS wakes it only when the state file changes. 
 ## License
 
 [MIT](LICENSE)
+
+## Optional: report chat status to an HQ server
+
+If `~/.config/rallo-hq/agent.env` exists (keep it `chmod 600`; it is never in this repo), each Claude Code chat's state
+(working, done, waiting on a question or a permission prompt) is also posted to your HQ server whenever it changes, plus a
+"still working" note every 10 minutes for long turns. It runs in the background with a 2-second timeout, so the lamp and Claude never
+wait on it, and if HQ is down the only trace is one line in `log.txt`. Only the first 200 characters of the last message are sent.
+The file has two lines:
+
+```
+HQ_STATUS_URL=https://your-hq-api-host
+HQ_STATUS_TOKEN=a status-only key from your HQ
+```
+
+Delete the file to turn it off. claude.ai web chats aren't reported yet.
+

@@ -33,6 +33,11 @@ FAKE = os.path.join(DIR, "fake-lamp.json")
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 API = "https://openapi.api.govee.com/router/api/v1"
 SCRIPT = os.path.realpath(__file__)
+# Optional: also tell a RALLO HQ server which chats are working / done / waiting. Off unless this private file exists
+# (chmod 600, never in this repo): HQ_STATUS_URL=... and HQ_STATUS_TOKEN=... (a status-only key).
+HQ_ENV = os.environ.get("HQ_STATUS_ENV") or os.path.expanduser("~/.config/rallo-hq/agent.env")
+HQ_SENT = os.path.join(DIR, "hq-sent.json")
+HQ_REFRESH_SEC = 600   # a chat that keeps working is re-sent this often, so HQ doesn't think it went quiet
 
 DEFAULTS = {
     "gold": [255, 170, 0],     # "Claude's done / needs you"
@@ -335,13 +340,14 @@ def prune(st):
                     if now - a.get("last", 0) < FORGET_AFTER.get(a.get("status"), 3600)}
 
 
-def set_status(sid, status, data, need, info=None):
+def set_status(sid, status, data, need, info=None, waiting="none"):
     """Record what this agent is doing. Returns a fresh token if the status changed."""
     if os.path.exists(PAUSED):
         return None
     now = time.time()
     a = load(STATE, new_state()).get("agents", {}).get(sid)
     if a and status == a.get("status") == WORKING and now - a.get("last", 0) < 60:
+        hq_refresh(sid, data)
         return None  # fast path: PostToolUse fires constantly, nothing new to say
     with locked():
         st = load(STATE, new_state())
@@ -358,6 +364,10 @@ def set_status(sid, status, data, need, info=None):
         save(STATE, st)
     if changed and sid in (st.get("holding") or {}).get("sids", {}):
         spawn("_unhold", sid)  # you answered the question -> lamp goes back
+    if changed:
+        hq_notify(sid, data, status, waiting, need)
+    elif status == WORKING:
+        hq_refresh(sid, data)
     return a["token"] if changed else None
 
 
@@ -376,6 +386,56 @@ def clear(sid=None):
     for held in list((st.get("holding") or {}).get("sids", {})):
         if sid is None or held == sid:
             spawn("_unhold", held)
+    if sid is not None and sid in load(HQ_SENT, {}):
+        spawn("_hq", sid, "ended", "none", "", "")
+
+
+# ---------- optional: RALLO HQ chat status (never touches the lamp) ----------
+
+def hq_notify(sid, data, status, waiting, need):
+    """Claude Code chats only (web chats have no transcript). Runs in the background; does nothing if HQ_ENV is missing."""
+    if data.get("transcript_path") and os.path.exists(HQ_ENV):
+        spawn("_hq", sid, status, waiting or "none", short(need, 200), os.path.basename(data.get("cwd") or ""))
+
+
+def hq_refresh(sid, data):
+    if not data.get("transcript_path") or not os.path.exists(HQ_ENV):
+        return
+    rec = load(HQ_SENT, {}).get(sid)
+    if rec is None:  # a chat that was already running when HQ was turned on: send it once
+        spawn("_hq", sid, WORKING, "none", "Working…", os.path.basename(data.get("cwd") or ""))
+    elif rec.get("status") == WORKING and time.time() - rec.get("t", 0) > HQ_REFRESH_SEC:
+        spawn("_hq", sid, WORKING, "none", rec.get("msg", ""), rec.get("folder", ""))
+
+
+def hq_send(sid, status, waiting, msg, folder):
+    """POST this chat's state to HQ. 2-second timeout; any failure is one log line, never an error."""
+    env = {}
+    with open(HQ_ENV) as f:
+        for line in f:
+            k, _, v = line.strip().partition("=")
+            if k and v and not k.startswith("#"):
+                env[k.strip()] = v.strip().strip("'\"")
+    url, token = env.get("HQ_STATUS_URL", "").rstrip("/"), env.get("HQ_STATUS_TOKEN", "")
+    if not url.startswith("https://") or not token:
+        return
+    a = load(STATE, new_state()).get("agents", {}).get(sid) or {}
+    body = {"session_id": sid, "state": status, "waiting_on": waiting, "since": a.get("since") or time.time(),
+            "title": a.get("title", ""), "folder": folder, "last_message": msg[:200]}
+    req = urllib.request.Request(url + "/api/cc/state", data=json.dumps(body).encode(), method="POST",
+                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                                          "User-Agent": "govee-claude"})
+    try:
+        urllib.request.urlopen(req, timeout=2).read()
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log(f"hq: {getattr(e, 'code', '') or type(e).__name__}")
+        return
+    sent = {k: v for k, v in load(HQ_SENT, {}).items() if time.time() - v.get("t", 0) < 86400}
+    if status == "ended":
+        sent.pop(sid, None)
+    else:
+        sent[sid] = {"t": time.time(), "status": status, "msg": msg[:200], "folder": folder}
+    save(HQ_SENT, sent)
 
 
 def watch(sid, token):
@@ -451,7 +511,7 @@ def final_turn(data):
             if x.get("type") == "tool_use" and x.get("name", "").endswith("wrap_up") \
                     and (x.get("input") or {}).get("ask") and not question:
                 question = x["input"]["ask"]
-    return short(text), short(question.replace("**", "").replace("`", "").strip(" *_#>"))
+    return short(text, 200), short(question.replace("**", "").replace("`", "").strip(" *_#>"))
 
 
 def hook():
@@ -464,21 +524,21 @@ def hook():
     if event == "Stop":
         text, question = final_turn(data)
         if question:  # it stopped to ask you something -> yellow sweep, red dot
-            token = set_status(sid, NEEDS, data, question)
+            token = set_status(sid, NEEDS, data, question, waiting="question")
             if token:
                 spawn("_flash", "ask", sid, token)
         elif set_status(sid, DONE, data, text or "Done"):
             spawn("_flash", "done")
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
         qs = (data.get("tool_input") or {}).get("questions") or [{}]
-        token = set_status(sid, NEEDS, data, qs[0].get("question") or "Asked you a question")
+        token = set_status(sid, NEEDS, data, qs[0].get("question") or "Asked you a question", waiting="question")
         if token:
             spawn("_flash", "ask", sid, token)
     elif event == "Notification":
         kind = data.get("notification_type") or ""
         msg = data.get("message") or ""
         if kind in ("permission_prompt", "elicitation_dialog") or (not kind and "permission" in msg.lower()):
-            token = set_status(sid, NEEDS, data, msg or "Needs your answer")
+            token = set_status(sid, NEEDS, data, msg or "Needs your answer", waiting="permission")
             if token:
                 spawn("_flash", "needs")
                 spawn("_watch", sid, token)
@@ -667,6 +727,11 @@ def main():
             unhold(sys.argv[2], *(sys.argv[3:4] or [None]), float(sys.argv[4]) if len(sys.argv) > 4 else 0)
         except Exception as e:
             log(f"unhold error: {e!r}")
+    elif cmd == "_hq":
+        try:
+            hq_send(*sys.argv[2:7])
+        except Exception as e:
+            log(f"hq error: {type(e).__name__}")
     elif cmd == "setup":
         setup()
     elif cmd == "test":
