@@ -2,7 +2,7 @@
 """govee-claude: your Govee lamp tells you when Claude needs you.
 
   Claude finished          -> green fills the lamp top -> middle -> bottom, then back to your color
-  Claude asks you a question -> same sweep in yellow, then back
+  Claude asks you a question -> same sweep in yellow, stays yellow until you answer, then back
   Claude needs permission    -> same sweep in red, then back
   Permission prompt you've ignored for 90s -> one quick red flash, then back
   Menu bar                 -> Claude logo + a traffic light per agent (yellow working,
@@ -45,6 +45,7 @@ DEFAULTS = {
     "sweep_step_sec": 0.45,    # gap between lights
     "sweep_hold_sec": 1.0,     # all three green this long, then back
     "min_brightness": 30,      # so gold is visible even if the lamp is dimmed way down
+    "ask_hold_max_min": 60,    # a question nobody answers lets the lamp go back after this long
 }
 
 COLOR = "devices.capabilities.color_setting"
@@ -204,20 +205,26 @@ def home_color(c, st):
     return s
 
 
-def flash(kind):
+def flash(kind, sid=None, token=None):
     """kind = "done":  green fills top -> middle -> bottom, then your color comes back.
-       kind = "ask":   same sweep in yellow (Claude asked you a question).
-       kind = "needs": same sweep in red (Claude wants permission).
-       kind = "red":   one quick red flash (reminder), then your color comes back."""
+       kind = "ask":   same sweep in yellow, and it STAYS yellow until you answer (unhold).
+       kind = "needs": same sweep in red (Claude wants permission), then back.
+       kind = "red":   one quick red flash (reminder), then back."""
     c = cfg()
     if not c.get("device"):
         return
     with locked():
+        st = load(STATE, new_state())
+        if kind == "ask" and sid:  # already answered before we got here? then don't bother
+            a = st.get("agents", {}).get(sid) or {}
+            if a.get("token") != token or a.get("status") != NEEDS:
+                return
         s = lamp_state(c)
         if not s or not s["on"] or not s["online"]:
             log("lamp off/offline, menu bar only")
             return
-        home = home_color(c, load(STATE, new_state()))
+        hold = st.get("holding")
+        home = hold["home"] if hold else home_color(c, st)
         log(f"flash {kind}")
         if home["brightness"] < c["min_brightness"]:
             set_brightness(c, c["min_brightness"])
@@ -226,11 +233,42 @@ def flash(kind):
             for seg in c["sweep_order"]:
                 set_segment(c, seg, color)
                 time.sleep(c["sweep_step_sec"])
+            if kind == "ask" and sid:  # hold yellow until this question is answered
+                st = load(STATE, new_state())
+                st["holding"] = {"home": home, "sids": {**(hold or {}).get("sids", {}), sid: token}}
+                save(STATE, st)
+                spawn("_unhold", sid, token, str(c["ask_hold_max_min"] * 60))
+                return
             time.sleep(c["sweep_hold_sec"])
         else:
             set_rgb(c, c["red"])
             time.sleep(c["flash_sec"])
-        restore(c, home)
+        if load(STATE, new_state()).get("holding"):
+            set_rgb(c, c["yellow"])  # a question is still waiting -> back to yellow, not your color
+        else:
+            restore(c, home)
+
+
+def unhold(sid, token=None, after=0):
+    """You answered (or closed the chat): stop holding yellow for it. Last one out restores your color."""
+    if after:
+        time.sleep(after)
+    c = cfg()
+    with locked():
+        st = load(STATE, new_state())
+        hold = st.get("holding")
+        if not hold or sid not in hold["sids"] or (token and hold["sids"][sid] != token):
+            return
+        del hold["sids"][sid]
+        if hold["sids"]:
+            save(STATE, st)
+            return
+        st.pop("holding")
+        save(STATE, st)
+        s = lamp_state(c)
+        if s and s["on"] and s["online"]:
+            log("answered, back to your color")
+            restore(c, hold["home"])
 
 
 def set_color(text):
@@ -318,6 +356,8 @@ def set_status(sid, status, data, need, info=None):
             log(f"{status} {sid[:8]} {a.get('title', '')[:30]}")
         st["agents"][sid] = a
         save(STATE, st)
+    if changed and sid in (st.get("holding") or {}).get("sids", {}):
+        spawn("_unhold", sid)  # you answered the question -> lamp goes back
     return a["token"] if changed else None
 
 
@@ -333,6 +373,9 @@ def clear(sid=None):
         else:
             st.get("agents", {}).pop(sid, None)
         save(STATE, st)
+    for held in list((st.get("holding") or {}).get("sids", {})):
+        if sid is None or held == sid:
+            spawn("_unhold", held)
 
 
 def watch(sid, token):
@@ -421,14 +464,16 @@ def hook():
     if event == "Stop":
         text, question = final_turn(data)
         if question:  # it stopped to ask you something -> yellow sweep, red dot
-            if set_status(sid, NEEDS, data, question):
-                spawn("_flash", "ask")
+            token = set_status(sid, NEEDS, data, question)
+            if token:
+                spawn("_flash", "ask", sid, token)
         elif set_status(sid, DONE, data, text or "Done"):
             spawn("_flash", "done")
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
         qs = (data.get("tool_input") or {}).get("questions") or [{}]
-        if set_status(sid, NEEDS, data, qs[0].get("question") or "Asked you a question"):
-            spawn("_flash", "ask")
+        token = set_status(sid, NEEDS, data, qs[0].get("question") or "Asked you a question")
+        if token:
+            spawn("_flash", "ask", sid, token)
     elif event == "Notification":
         kind = data.get("notification_type") or ""
         msg = data.get("message") or ""
@@ -461,8 +506,9 @@ def web():
     elif event == "done":
         question = short(msg.get("question") or "")
         if question:  # Claude ended by asking you something -> yellow sweep
-            if set_status(sid, NEEDS, {}, question, {**info, "need": question}):
-                spawn("_flash", "ask")
+            token = set_status(sid, NEEDS, {}, question, {**info, "need": question})
+            if token:
+                spawn("_flash", "ask", sid, token)
         elif set_status(sid, DONE, {}, "Done", {**info, "need": "claude.ai"}):
             spawn("_flash", "done")
     elif event == "end":
@@ -613,9 +659,14 @@ def main():
             log(f"watch error: {e!r}")
     elif cmd == "_flash":
         try:
-            flash(sys.argv[2])
+            flash(*sys.argv[2:5])
         except Exception as e:
             log(f"flash error: {e!r}")
+    elif cmd == "_unhold":
+        try:
+            unhold(sys.argv[2], *(sys.argv[3:4] or [None]), float(sys.argv[4]) if len(sys.argv) > 4 else 0)
+        except Exception as e:
+            log(f"unhold error: {e!r}")
     elif cmd == "setup":
         setup()
     elif cmd == "test":

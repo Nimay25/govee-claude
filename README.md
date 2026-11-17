@@ -10,9 +10,9 @@ Your Govee lamp, and a little orange guy in the menu bar, tell you when Claude n
 
 Click it for the list of agents, with how long each one has been done or waiting. Pick one to jump straight to that chat. The logo does a quick spin when one finishes or needs you.
 
-**Lamp:** when an agent finishes, green fills the 3 lights top → middle → bottom, then it goes back to your color. When it stops to **ask you a question** (a question at the end of its reply, or a question box), the same sweep happens in **yellow**. A **permission prompt** gets it in **red**. A permission prompt left unanswered for 90s gets one extra quick red flash. If the lamp is off, it does nothing (the menu bar still works).
+**Lamp:** when an agent finishes, green fills the 3 lights top → middle → bottom, then it goes back to your color. When it stops to **ask you a question** (a question at the end of its reply, or a question box), the same sweep happens in **yellow** and the lamp **stays yellow until you answer** (then it goes back; after an hour with no answer it gives up and goes back anyway). A **permission prompt** gets it in **red**. A permission prompt left unanswered for 90s gets one extra quick red flash. If the lamp is off, it does nothing (the menu bar still works).
 
-The lamp never holds a color. It always goes back to whatever color and brightness you had.
+Apart from a waiting question, the lamp never holds a color. It always goes back to whatever color and brightness you had.
 If you use a Govee *scene* or different colors per light, the API can't read that,
 so after a flash you get one flat color. Pick a solid color in the app if that bugs you.
 
